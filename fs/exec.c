@@ -1244,6 +1244,13 @@ int check_unsafe_exec(struct linux_binprm *bprm)
 
 	bprm->unsafe = tracehook_unsafe_exec(p);
 
+	/*
+	 * This isn't strictly necessary, but it makes it harder for LSMs to
+	 * mess up.
+	 */
+	if (current->no_new_privs)
+		bprm->unsafe |= LSM_UNSAFE_NO_NEW_PRIVS;
+
 	n_fs = 1;
 	spin_lock(&p->fs->lock);
 	rcu_read_lock();
