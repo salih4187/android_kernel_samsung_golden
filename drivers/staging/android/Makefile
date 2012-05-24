@@ -1,4 +1,7 @@
+ccflags-y += -I$(src)			# needed for trace events
+
 obj-$(CONFIG_ANDROID_AB5500_TIMED_VIBRA)	+= ab5500-timed-vibra.o
+
 obj-$(CONFIG_ANDROID_BINDER_IPC)	+= binder.o
 obj-$(CONFIG_ASHMEM)			+= ashmem.o
 obj-$(CONFIG_ANDROID_LOGGER)		+= logger.o
