@@ -299,6 +299,7 @@ struct binder_buffer {
 	struct binder_node *target_node;
 	size_t data_size;
 	size_t offsets_size;
+	size_t extra_buffers_size;
 	void *data;
 };
 
@@ -782,7 +783,9 @@ static int binder_update_page_range(struct binder_proc *proc, int allocate,
 
 static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 					      size_t data_size,
-					      size_t offsets_size, int is_async)
+					      size_t offsets_size,
+					      size_t extra_buffers_size,
+					      int is_async)
 {
 	struct rb_node *n = proc->free_buffers.rb_node;
 	struct binder_buffer *buffer;
@@ -790,7 +793,7 @@ static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 	struct rb_node *best_fit = NULL;
 	void *has_page_addr;
 	void *end_page_addr;
-	size_t size;
+	size_t size, data_offsets_size;
 
 	if (proc->vma == NULL) {
 		printk(KERN_ERR "binder: %d: binder_alloc_buf, no vma\n",
@@ -798,15 +801,20 @@ static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 		return NULL;
 	}
 
-	size = ALIGN(data_size, sizeof(void *)) +
+	data_offsets_size = ALIGN(data_size, sizeof(void *)) +
 		ALIGN(offsets_size, sizeof(void *));
 
-	if (size < data_size || size < offsets_size) {
+	if (data_offsets_size < data_size || data_offsets_size < offsets_size) {
 		binder_user_error("binder: %d: got transaction with invalid "
 			"size %zd-%zd\n", proc->pid, data_size, offsets_size);
 		return NULL;
 	}
-
+	size = data_offsets_size + ALIGN(extra_buffers_size, sizeof(void *));
+	if (size < data_offsets_size || size < extra_buffers_size) {
+		binder_user_error("%d: got transaction with invalid extra_buffers_size %zd\n",
+				  proc->pid, extra_buffers_size);
+		return NULL;
+	}
 	if (is_async &&
 	    proc->free_async_space < size + sizeof(struct binder_buffer)) {
 		binder_debug(BINDER_DEBUG_BUFFER_ALLOC,
@@ -880,6 +888,7 @@ static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 		     "%p\n", proc->pid, size, buffer);
 	buffer->data_size = data_size;
 	buffer->offsets_size = offsets_size;
+	buffer->extra_buffers_size = extra_buffers_size;
 	buffer->async_transaction = is_async;
 	if (is_async) {
 		proc->free_async_space -= size + sizeof(struct binder_buffer);
@@ -964,7 +973,8 @@ static void binder_free_buf(struct binder_proc *proc,
 	buffer_size = binder_buffer_size(proc, buffer);
 
 	size = ALIGN(buffer->data_size, sizeof(void *)) +
-		ALIGN(buffer->offsets_size, sizeof(void *));
+		ALIGN(buffer->offsets_size, sizeof(void *)) +
+		ALIGN(buffer->extra_buffers_size, sizeof(void *));
 
 	binder_debug(BINDER_DEBUG_BUFFER_ALLOC,
 		     "binder: %d: binder_free_buf %p size %zd buffer"
@@ -1688,7 +1698,8 @@ err_fd_not_accepted:
 
 static void binder_transaction(struct binder_proc *proc,
 			       struct binder_thread *thread,
-			       struct binder_transaction_data *tr, int reply)
+			       struct binder_transaction_data *tr, int reply,
+			       binder_size_t extra_buffers_size)
 {
 	int ret;
 	struct binder_transaction *t;
@@ -1845,7 +1856,8 @@ static void binder_transaction(struct binder_proc *proc,
 			     target_proc->pid, target_thread->pid,
 			     (u64)tr->data.ptr.buffer,
 			     (u64)tr->data.ptr.offsets,
-			     (u64)tr->data_size, (u64)tr->offsets_size);
+			     (u64)tr->data_size, (u64)tr->offsets_size,
+			     (u64)extra_buffers_size);
 	else
 		binder_debug(BINDER_DEBUG_TRANSACTION,
 			     "binder: %d:%d BC_TRANSACTION %d -> "
@@ -1854,7 +1866,8 @@ static void binder_transaction(struct binder_proc *proc,
 			     target_proc->pid, target_node->debug_id,
 			     (u64)tr->data.ptr.buffer,
 			     (u64)tr->data.ptr.offsets,
-			     (u64)tr->data_size, (u64)tr->offsets_size);
+			     (u64)tr->data_size, (u64)tr->offsets_size,
+			     (u64)extra_buffers_size);
 
 	if (!reply && !(tr->flags & TF_ONE_WAY))
 		t->from = thread;
@@ -1870,7 +1883,8 @@ static void binder_transaction(struct binder_proc *proc,
 	trace_binder_transaction(reply, t, target_node);
 
 	t->buffer = binder_alloc_buf(target_proc, tr->data_size,
-		tr->offsets_size, !reply && (t->flags & TF_ONE_WAY));
+		tr->offsets_size, extra_buffers_size,
+		!reply && (t->flags & TF_ONE_WAY));
 	if (t->buffer == NULL) {
 		return_error = BR_FAILED_REPLY;
 		goto err_binder_alloc_buf_failed;
@@ -2230,7 +2244,8 @@ static int binder_thread_write(struct binder_proc *proc,
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
 			ptr += sizeof(tr);
-			binder_transaction(proc, thread, &tr, cmd == BC_REPLY);
+			binder_transaction(proc, thread, &tr,
+					   cmd == BC_REPLY, 0);
 			break;
 		}
 
