@@ -186,6 +186,7 @@ struct binder_transaction_log_entry {
 	int to_node;
 	int data_size;
 	int offsets_size;
+	const char *context_name;
 };
 struct binder_transaction_log {
 	int next;
@@ -213,10 +214,12 @@ static struct binder_transaction_log_entry *binder_transaction_log_add(
 struct binder_context {
 	struct binder_node *binder_context_mgr_node;
 	uid_t binder_context_mgr_uid;
+	const char *name;
 };
 
 static struct binder_context global_context = {
 	.binder_context_mgr_uid = -1,
+	.name = "binder",
 };
 
 struct binder_work {
@@ -1539,6 +1542,7 @@ static void binder_transaction(struct binder_proc *proc,
 	e->target_handle = tr->target.handle;
 	e->data_size = tr->data_size;
 	e->offsets_size = tr->offsets_size;
+	e->context_name = proc->context->name;
 
 	if (reply) {
 		in_reply_to = thread->transaction_stack;
@@ -3189,8 +3193,17 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		char strbuf[11];
 
 		snprintf(strbuf, sizeof(strbuf), "%u", proc->pid);
+		/*
+		 * proc debug entries are shared between contexts, so
+		 * this will fail if the process tries to open the driver
+		 * again with a different context. The priting code will
+		 * anyway print all contexts that a given PID has, so this
+		 * is not a problem.
+		 */
 		proc->debugfs_entry = debugfs_create_file(strbuf, S_IRUGO,
-			binder_debugfs_dir_entry_proc, proc, &binder_proc_fops);
+			binder_debugfs_dir_entry_proc,
+			(void *)(unsigned long)proc->pid,
+			&binder_proc_fops);
 	}
 
 	return 0;
@@ -3586,6 +3599,7 @@ static void print_binder_proc(struct seq_file *m,
 	size_t header_pos;
 
 	seq_printf(m, "proc %d\n", proc->pid);
+	seq_printf(m, "context %s\n", proc->context->name);
 	header_pos = m->count;
 
 	for (n = rb_first(&proc->threads); n != NULL; n = rb_next(n))
@@ -3710,6 +3724,7 @@ static void print_binder_proc_stats(struct seq_file *m,
 	int count, strong, weak;
 
 	seq_printf(m, "proc %d\n", proc->pid);
+	seq_printf(m, "context %s\n", proc->context->name);
 	count = 0;
 	for (n = rb_first(&proc->threads); n != NULL; n = rb_next(n))
 		count++;
@@ -3835,11 +3850,11 @@ static void print_binder_transaction_log_entry(struct seq_file *m,
 					struct binder_transaction_log_entry *e)
 {
 	seq_printf(m,
-		   "%d: %s from %d:%d to %d:%d node %d handle %d size %d:%d\n",
+		   "%d: %s from %d:%d to %d:%d context %s node %d handle %d size %d:%d\n",
 		   e->debug_id, (e->call_type == 2) ? "reply" :
 		   ((e->call_type == 1) ? "async" : "call "), e->from_proc,
-		   e->from_thread, e->to_proc, e->to_thread, e->to_node,
-		   e->target_handle, e->data_size, e->offsets_size);
+		   e->from_thread, e->to_proc, e->to_thread, e->context_name,
+		   e->to_node, e->target_handle, e->data_size, e->offsets_size);
 }
 
 static int binder_transaction_log_show(struct seq_file *m, void *unused)
